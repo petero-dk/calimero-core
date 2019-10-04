@@ -60,8 +60,7 @@ public final class DataUnitBuilder
 	private static final int T_ACK = 0xC2;
 	private static final int T_NAK = 0xC3;
 
-	private DataUnitBuilder()
-	{}
+	private DataUnitBuilder() {}
 
 	/**
 	 * Returns the application layer service of a given protocol data unit.
@@ -107,6 +106,9 @@ public final class DataUnitBuilder
 		}
 		// memory codes
 		else if (apci4 == 8 || apci4 == 9 || apci4 == 10)
+			return apci4 << 6;
+		// master reset uses same apci as restart, but with bit flags for restart type and response
+		else if (apci4 == 14 && (apci6 == 1 || apci6 == 0b100001))
 			return apci4 << 6;
 		// the rest
 		else
@@ -363,11 +365,11 @@ public final class DataUnitBuilder
 		case 0xC0:
 			return "A_IndAddr.write";
 		case 0x03DC:
-			return "A_IndAddr-sno.read";
+			return "A_IndAddr-S/N.read";
 		case 0x03DD:
-			return "A_IndAddr-sno.response";
+			return "A_IndAddr-S/N.response";
 		case 0x03DE:
-			return "A_IndAddr-sno.write";
+			return "A_IndAddr-S/N.write";
 		case 0x300:
 			return "A_Device-desc.read";
 		case 0x340:
@@ -432,10 +434,30 @@ public final class DataUnitBuilder
 			return "A_FunctionPropertyCommand";
 		case 0b1011001001:
 			return "A_FunctionPropertyState.response";
+		// services for extended interface object addressing
+		case 0b0111001100:
+			return "A_PropertyExtValue.read";
+		case 0b0111001101:
+			return "A_PropertyExtValue.response";
+		case 0b0111001110:
+			return "A_PropertyExtValue.write";
+		case 0b0111001111:
+			return "A_PropertyExtValue.write-response";
+		case 0b0111010000:
+			return "A_PropertyExtValue.write-uncon";
+		case 0b0111010001:
+			return "A_PropertyExtValue.info";
+		case 0b0111010010:
+			return "A_PropertyExtDescription.read";
+		case 0b0111010011:
+			return "A_PropertyExtDescription.response";
 		case 0b0111010100:
 			return "A_FunctionPropertyExtCommand";
+		case 0b0111010101:
+			return "A_FunctionPropertyExtState.read";
 		case 0b0111010110:
 			return "A_FunctionPropertyExtState.response";
+
 		default:
 			return "APCI 0x" + Integer.toHexString(apci);
 		}

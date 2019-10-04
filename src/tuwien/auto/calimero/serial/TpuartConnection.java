@@ -1,6 +1,6 @@
 /*
     Calimero 2 - A library for KNX network access
-    Copyright (c) 2014, 2018 B. Malinowsky
+    Copyright (c) 2014, 2019 B. Malinowsky
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -41,13 +41,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
@@ -151,7 +151,7 @@ public class TpuartConnection implements AutoCloseable
 	private final EventListeners<KNXListener> listeners = new EventListeners<>();
 
 	private final Set<KNXAddress> addresses = Collections.synchronizedSet(new HashSet<>());
-	private final List<KNXAddress> sending = Collections.synchronizedList(new ArrayList<>());
+	private final Map<KNXAddress, Long> sending = new ConcurrentHashMap<>();
 
 	private final Logger logger;
 
@@ -174,6 +174,7 @@ public class TpuartConnection implements AutoCloseable
 		os = adapter.getOutputStream();
 		is = adapter.getInputStream();
 
+		addresses.add(new GroupAddress(0));
 		addresses.addAll(acknowledge);
 
 		receiver = new Receiver();
@@ -258,19 +259,17 @@ public class TpuartConnection implements AutoCloseable
 	public void send(final byte[] frame, final boolean waitForCon)
 		throws KNXPortClosedException, KNXAckTimeoutException, InterruptedException
 	{
-		final boolean group = (frame[3] & 0x80) == 0x80;
-		KNXAddress dst = null;
-		if (group) {
-			dst = new GroupAddress(new byte[] { frame[6], frame[7] });
-			sending.add(dst);
-		}
-
 		try {
 			final byte[] data = toUartServices(cEmiToTP1(frame));
 			if (logger.isTraceEnabled())
 				logger.trace("create UART services {}", DataUnitBuilder.toHex(data, " "));
 			req = frame.clone();
 			final long start = System.nanoTime();
+
+			final boolean group = (frame[3] & 0x80) == 0x80;
+			if (group)
+				sending.put(new GroupAddress(new byte[] { frame[6], frame[7] }), start);
+
 			synchronized (enterIdleLock) {
 				while (!idle)
 					enterIdleLock.wait();
@@ -295,7 +294,6 @@ public class TpuartConnection implements AutoCloseable
 		}
 		finally {
 			req = null;
-			sending.remove(dst);
 		}
 	}
 
@@ -429,7 +427,7 @@ public class TpuartConnection implements AutoCloseable
 	}
 
 	// Stores the currently used max. inter-byte delay, to also be available for subsequent tpuart connections.
-	private static AtomicInteger maxInterByteDelay = new AtomicInteger(4000); // [us]
+	private static AtomicInteger maxInterByteDelay = new AtomicInteger(5200); // 50 bit times [us]
 
 	private final class Receiver extends Thread
 	{
@@ -440,6 +438,7 @@ public class TpuartConnection implements AutoCloseable
 		private boolean extFrame;
 		private boolean frameAcked;
 
+		private byte[] lastReceived = new byte[0];
 		private long lastUartState = System.currentTimeMillis();
 		private boolean uartStatePending;
 
@@ -499,7 +498,7 @@ public class TpuartConnection implements AutoCloseable
 
 					final long idlePeriod = (start - enterIdleTimestamp) / 1000;
 					if (enterIdleTimestamp != 0 && idlePeriod > 100_000)
-						logger.trace("return from extended idle period of {} us", idlePeriod);
+						logger.trace("receiver woke from extended idle period of {} us", idlePeriod);
 					idle = false;
 					enterIdleTimestamp = 0;
 
@@ -551,22 +550,27 @@ public class TpuartConnection implements AutoCloseable
 
 		private boolean parseFrame(final int c) throws IOException
 		{
+			final long now = System.nanoTime() / 1000;
 			int size = in.size();
-			// empty buffer if we didn't receive data for some time
-			if (size > 0 && ((lastRead + maxInterByteDelay()) < (System.nanoTime() / 1000))) {
-				final byte[] buf = in.toByteArray();
-				in.reset();
-				size = 0;
-				logger.debug("reset input buffer, discard partial frame (length {}) {}", buf.length,
-						DataUnitBuilder.toHex(buf, " "));
-				consecutiveFrameDrops++;
+			if (size > 0) {
+				// empty current buffer if we didn't receive data for some time
+				final int minLength = extFrame ? 7 : 6;
+				final long diff = now - lastRead;
+				if (size < minLength && diff > maxInterByteDelay()) {
+					resetReceiveBuffer(c, diff);
+					size = 0;
+				}
+				else if (size >= minLength && diff > 4 * maxInterByteDelay()) {
+					resetReceiveBuffer(c, diff);
+					size = 0;
+				}
 			}
 
 			if (size > 0) {
 				in.write(c);
-				lastRead = System.nanoTime() / 1000;
-				final int minLength = extFrame ? 6 : 5;
-				if (size + 1 > minLength) {
+				lastRead = now;
+				final int minLength = extFrame ? 7 : 6;
+				if (size + 1 >= minLength) {
 					final byte[] frame = in.toByteArray();
 					ack(frame);
 
@@ -586,8 +590,19 @@ public class TpuartConnection implements AutoCloseable
 							if (busmon) {
 								fireFrameReceived(createBusmonInd(data));
 							}
-							else
-								fireFrameReceived(createLDataInd(data));
+							else {
+								// check repetition of a directly preceding correctly received frame
+								final boolean repeated = (data[0] & RepeatFlag) == 0;
+								if (repeated && Arrays.equals(lastReceived, 0, lastReceived.length - 2, frame, 0, data.length - 2)) {
+									logger.debug("ignore repetition of directly preceding correctly received frame");
+								}
+								else {
+									lastReceived = data.clone();
+									lastReceived[0] &= ~RepeatFlag; // set repeat flag
+
+									fireFrameReceived(createLDataInd(data));
+								}
+							}
 						}
 						catch (final Exception e) {
 							logger.error("error creating {} from TP1 data (length {}): {}",
@@ -601,7 +616,7 @@ public class TpuartConnection implements AutoCloseable
 				}
 			}
 			else if (isLDataStart(c)) {
-				lastRead = System.nanoTime() / 1000;
+				lastRead = now;
 				in.reset();
 				in.write(c);
 				frameAcked = false;
@@ -612,6 +627,15 @@ public class TpuartConnection implements AutoCloseable
 			else
 				return false;
 			return true;
+		}
+
+		private void resetReceiveBuffer(final int c, final long diff) {
+			final byte[] buf = in.toByteArray();
+			in.reset();
+			logger.debug("reset receive buffer after {} us, char 0x{}, discard partial frame (length {}) {}", diff,
+					Integer.toHexString(c), buf.length,
+					DataUnitBuilder.toHex(buf, " "));
+			consecutiveFrameDrops++;
 		}
 
 		private void readUartState() throws IOException
@@ -634,9 +658,10 @@ public class TpuartConnection implements AutoCloseable
 			final boolean txError = (c & 0x20) == 0x20; // send 0, receive 1
 			final boolean protError = (c & 0x10) == 0x10; // illegal ctrl byte
 			final boolean tempWarning = (c & 0x08) == 0x08; // too hot
-			logger.debug("TP-UART status update: {}Temp. {}, Errors: Rx={} Tx={} Prot={}",
-					slaveCollision ? "Slave collision, " : "", tempWarning ? "warning" : "OK", rxError, txError,
-					protError);
+			if (slaveCollision || rxError || txError || protError || tempWarning)
+				logger.debug("TP-UART status update: {}Temp. {}, Errors: Rx={} Tx={} Prot={}",
+						slaveCollision ? "slave collision, " : "", tempWarning ? "warning" : "OK", rxError, txError,
+						protError);
 			if (tempWarning) {
 				coolDownUntil = System.nanoTime() + 1_000_000_000;
 				logger.warn("TP-UART high temperature warning! Sending is paused for 1 second ...");
@@ -663,7 +688,7 @@ public class TpuartConnection implements AutoCloseable
 			final boolean start = (c & 0xd0) == StdFrameFormat || (c & 0xd0) == ExtFrameFormat;
 			if (start) {
 				final boolean repeated = (c & RepeatFlag) == 0;
-				logger.trace("Start of frame 0x{}, repeated = {}", Integer.toHexString(c), repeated);
+				logger.trace("start of frame 0x{}, repeated = {}", Integer.toHexString(c), repeated);
 				extFrame = (c & 0xd0) == ExtFrameFormat;
 			}
 			return start;
@@ -676,8 +701,10 @@ public class TpuartConnection implements AutoCloseable
 		{
 			if (busmon || frameAcked)
 				return;
-			final byte[] addr = new byte[] { frame[3], frame[4] };
-			final boolean group = (frame[5] & 0x80) == 0x80;
+			final int addrOffset = extFrame ? 4 : 3;
+			final byte[] addr = new byte[] { frame[addrOffset], frame[addrOffset + 1] };
+			final int addrTypeOffset = extFrame ? 1 : 5;
+			final boolean group = (frame[addrTypeOffset] & 0x80) == 0x80;
 			final KNXAddress dst = group ? new GroupAddress(addr) : new IndividualAddress(addr);
 
 			// We can answer as follows:
@@ -685,7 +712,13 @@ public class TpuartConnection implements AutoCloseable
 			// NAK: we don't care about that, because the TP-UART checks that for us
 			// Busy: we're never busy
 			int ack = AckInfo;
-			final boolean oneOfUs = addresses.contains(dst) || sending.contains(dst);
+
+			final long timestamp = sending.getOrDefault(dst, 0L);
+			final boolean groupResponse = (System.nanoTime() - timestamp) < 3_000_000_000L;
+			if (timestamp > 0 && !groupResponse)
+				sending.remove(dst);
+
+			final boolean oneOfUs = addresses.contains(dst) || groupResponse;
 			if (oneOfUs) {
 				ack |= 0x01;
 				os.write(new byte[] { (byte) ack });
