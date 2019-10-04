@@ -366,12 +366,38 @@ final class BcuSwitcher
 	}
 
 	void normalMode(final boolean cEMI) throws KNXAckTimeoutException, KNXPortClosedException, InterruptedException {
-		final byte[] switchNormal = { (byte) peiSwitch_req, 0x1E, 0x12, 0x34, 0x56, 0x78, (byte) 0x9A, };
+		normalMode(cEMI, "default");
+	}
+
+	void normalMode(final boolean cEMI, final String deviceType) throws KNXAckTimeoutException, KNXPortClosedException, InterruptedException {
+		byte[] switchNormal;
+		switch(deviceType) {
+			case "kerry" :
+			case "baos" :
+				switchNormal = { (byte) 0xf6, 0x00, 0x08, 0x01, 0x34, 0x10, 0x01, (byte) 0xf0 };
+				break; 
+			default : 
+				switchNormal = { (byte) peiSwitch_req, 0x1E, 0x12, 0x34, 0x56, 0x78, (byte) 0x9A, };
+		}
+
 		conn.send(cEMI ? commModeRequest(NoLayer) : switchNormal, true);
 	}
 
 	void linkLayerMode(final boolean cEMI) throws KNXException {
-		final byte[] switchLinkLayer = { (byte) peiSwitch_req, 0x00, 0x18, 0x34, 0x56, 0x78, 0x0A, };
+		linkLayerMode(cEMI, "default");
+	}
+
+	void linkLayerMode(final boolean cEMI, final String deviceType) throws KNXException {
+		final byte[] switchLinkLayer;
+		switch(deviceType) {
+			case "kerry" :
+			case "baos" :
+				switchLinkLayer = { (byte) 0xf6, 0x00, 0x08, 0x01, 0x34, 0x10, 0x01, 0x00 };
+				break; 
+			default : 
+				switchLinkLayer = { (byte) peiSwitch_req, 0x00, 0x18, 0x34, 0x56, 0x78, 0x0A, };
+		}
+		
 		try {
 			conn.send(cEMI ? commModeRequest(DataLinkLayer) : switchLinkLayer, true);
 			// TODO check .con for error case

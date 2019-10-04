@@ -53,9 +53,18 @@ import tuwien.auto.calimero.serial.KNXPortClosedException;
  */
 public class KNXNetworkLinkFT12 extends AbstractLink<FT12Connection>
 {
+	
+	/** The device type for specific protocol implementation: kberry, baos, default. */
+	protected String deviceType;
+
 	public static KNXNetworkLinkFT12 newCemiLink(final String portId, final KNXMediumSettings settings)
 			throws KNXException {
 		return new KNXNetworkLinkFT12(new FT12Connection(portId), settings, true);
+	}
+
+	public static KNXNetworkLinkFT12 newCemiLink(final String portId, final KNXMediumSettings settings, final String deviceType)
+			throws KNXException {
+		return new KNXNetworkLinkFT12(new FT12Connection(portId), settings, true, deviceType);
 	}
 
 	/**
@@ -110,8 +119,23 @@ public class KNXNetworkLinkFT12 extends AbstractLink<FT12Connection>
 	 */
 	protected KNXNetworkLinkFT12(final FT12Connection c, final KNXMediumSettings settings, final boolean cEMI)
 			throws KNXException {
+		this(c, settings, false, "default");
+	}
+
+	/**
+	 * Creates a new KNX network link using the supplied FT1.2 protocol connection with either cEMI or EMI2 format.
+	 *
+	 * @param c a FT1.2 protocol connection in open state
+	 * @param settings medium settings defining device and medium specifics needed for communication
+	 * @param cEMI <code>true</code> to use cEMI format, <code>false</code> to use EMI2 format
+	 * @param deviceType <code>empty</code> to use default device type, <code>kberry</code> or <code>baos</code> to use baos device type, changes mode switching commands
+	 * @throws KNXException on error, timeout, or interrupt while switching to link layer mode
+	 */
+	protected KNXNetworkLinkFT12(final FT12Connection c, final KNXMediumSettings settings, final boolean cEMI, final String deviceType)
+			throws KNXException {
 		super(c, c.getPortID(), settings);
 		this.cEMI = cEMI;
+		this.deviceType = deviceType;
 		sendCEmiAsByteArray = true;
 		linkLayerMode();
 		conn.addConnectionListener(notifier);
@@ -152,10 +176,10 @@ public class KNXNetworkLinkFT12 extends AbstractLink<FT12Connection>
 	}
 
 	private void linkLayerMode() throws KNXException {
-		new BcuSwitcher(conn).linkLayerMode(cEMI);
+		new BcuSwitcher(conn).linkLayerMode(cEMI, deviceType);
 	}
 
 	private void normalMode() throws KNXAckTimeoutException, KNXPortClosedException, InterruptedException {
-		new BcuSwitcher(conn).normalMode(cEMI);
+		new BcuSwitcher(conn).normalMode(cEMI, deviceType);
 	}
 }
