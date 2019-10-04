@@ -378,7 +378,8 @@ public abstract class AbstractLink<T extends AutoCloseable> implements KNXNetwor
 	protected CEMI onReceive(final FrameEvent e) throws KNXFormatException
 	{
 		final CEMI f = e.getFrame();
-		return f != null ? f : CEMIFactory.fromEmi(e.getFrameBytes());
+		final byte[] bytes = e.getFrameBytes();
+		return f != null ? f : cEMI ? CEMIFactory.create(bytes,  0, bytes.length) : CEMIFactory.fromEmi(bytes);
 	}
 
 	/**

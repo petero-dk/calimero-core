@@ -132,6 +132,7 @@ final class BcuSwitcher
 	{
 		this.c = c;
 		logger = l;
+		logger.debug("init bcu switcher");
 		conn = null; // XXX
 	}
 
@@ -358,11 +359,12 @@ final class BcuSwitcher
 
 	private final FT12Connection conn;
 
-	BcuSwitcher(final FT12Connection conn)
+	BcuSwitcher(final FT12Connection conn, final Logger l)
 	{
 		this.conn = conn;
 		c = null; // XXX
-		logger = null;
+		logger = l;
+		logger.debug("init bcu switcher ft12");
 	}
 
 	void normalMode(final boolean cEMI) throws KNXAckTimeoutException, KNXPortClosedException, InterruptedException {
@@ -370,17 +372,18 @@ final class BcuSwitcher
 	}
 
 	void normalMode(final boolean cEMI, final String deviceType) throws KNXAckTimeoutException, KNXPortClosedException, InterruptedException {
-		byte[] switchNormal;
+		final byte[] switchNormal = { (byte) peiSwitch_req, 0x1E, 0x12, 0x34, 0x56, 0x78, (byte) 0x9A, };
+		int commMode;
 		switch(deviceType) {
 			case "kerry" :
 			case "baos" :
-				switchNormal = new byte[] { (byte) 0xf6, 0x00, 0x08, 0x01, 0x34, 0x10, 0x01, (byte) 0xf0 };
+				commMode = BaosMode;
 				break; 
-			default : 
-				switchNormal = new byte[] { (byte) peiSwitch_req, 0x1E, 0x12, 0x34, 0x56, 0x78, (byte) 0x9A, };
+			default :
+				commMode = NoLayer; 
 		}
-
-		conn.send(cEMI ? commModeRequest(NoLayer) : switchNormal, true);
+		logger.debug("switch normalMode for {}.", deviceType);
+		conn.send(cEMI ? commModeRequest(commMode) : switchNormal, true);
 	}
 
 	void linkLayerMode(final boolean cEMI) throws KNXException {
@@ -388,16 +391,9 @@ final class BcuSwitcher
 	}
 
 	void linkLayerMode(final boolean cEMI, final String deviceType) throws KNXException {
-		final byte[] switchLinkLayer;
-		switch(deviceType) {
-			case "kerry" :
-			case "baos" :
-				switchLinkLayer =  new byte[] { (byte) 0xf6, 0x00, 0x08, 0x01, 0x34, 0x10, 0x01, 0x00 };
-				break; 
-			default : 
-				switchLinkLayer = new byte[] { (byte) peiSwitch_req, 0x00, 0x18, 0x34, 0x56, 0x78, 0x0A, };
-		}
+		final byte[] switchLinkLayer = { (byte) peiSwitch_req, 0x00, 0x18, 0x34, 0x56, 0x78, 0x0A, };
 		
+		logger.debug("switch linkLayerMode for {} with cemi", deviceType, cEMI);
 		try {
 			conn.send(cEMI ? commModeRequest(DataLinkLayer) : switchLinkLayer, true);
 			// TODO check .con for error case
